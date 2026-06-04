@@ -174,9 +174,9 @@ jobs:
           ssh deploy@217.154.182.252 "
             export KUBECONFIG=~/.kube/config
             kubectl apply -f /tmp/${NAMESPACE}.yaml
-            # Copy ghcr-secret using raw dockerconfigjson data
-            kubectl get secret ghcr-secret -n webs -o json \
-              | python3 -c "import json,sys; s=json.load(sys.stdin); s['metadata']['namespace']='${NAMESPACE}'; [s['metadata'].pop(k,None) for k in ['resourceVersion','uid','creationTimestamp']]; print(json.dumps(s))" \
+            kubectl get secret ghcr-secret -n webs -o yaml \
+              | grep -v 'resourceVersion:\|^\s*uid:\|creationTimestamp:' \
+              | sed "s/  namespace: webs/  namespace: ${NAMESPACE}/" \
               | kubectl apply -f -
             rm /tmp/${NAMESPACE}.yaml
             echo 'Preview namespace ready: ${NAMESPACE}'
