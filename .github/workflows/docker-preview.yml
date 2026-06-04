@@ -175,11 +175,9 @@ jobs:
             export KUBECONFIG=~/.kube/config
             kubectl apply -f /tmp/${NAMESPACE}.yaml
             # Copy ghcr-secret using raw dockerconfigjson data
-            DOCKER_CONFIG=\$(kubectl get secret ghcr-secret -n webs -o jsonpath='{.data.\.dockerconfigjson}')
-            kubectl create secret docker-registry ghcr-secret \
-              --namespace=${NAMESPACE} \
-              --from-literal=.dockerconfigjson=\$(echo \$DOCKER_CONFIG | base64 -d) \
-              --dry-run=client -o yaml | kubectl apply -f -
+            kubectl get secret ghcr-secret -n webs -o json \
+              | python3 -c "import json,sys; s=json.load(sys.stdin); s['metadata']['namespace']='${NAMESPACE}'; [s['metadata'].pop(k,None) for k in ['resourceVersion','uid','creationTimestamp']]; print(json.dumps(s))" \
+              | kubectl apply -f -
             rm /tmp/${NAMESPACE}.yaml
             echo 'Preview namespace ready: ${NAMESPACE}'
           "
