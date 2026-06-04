@@ -3,6 +3,10 @@ name: Preview Environment
 on:
   workflow_call:
     inputs:
+      sha:
+        description: Short SHA (7 chars) of the built image tag
+        type: string
+        required: true
       container-port:
         type: number
         default: 3000
@@ -34,24 +38,23 @@ jobs:
           PR_NUMBER: ${{ github.event.number }}
           PORT: ${{ inputs.container-port }}
           READINESS_PATH: ${{ inputs.readiness-path }}
+          SHA: ${{ inputs.sha }}
         run: |
           set -euo pipefail
-          SHA_SHORT="${GITHUB_SHA:0:7}"
           NAMESPACE="preview-${APP_NAME}-pr-${PR_NUMBER}"
           APP_SLUG="${APP_NAME#santa-ana-}"
           PREVIEW_HOST="pr-${PR_NUMBER}-${APP_SLUG}.apsantaana.eu"
-          IMAGE="ghcr.io/apartamentossantaana/${APP_NAME}:sha-${SHA_SHORT}"
+          IMAGE="ghcr.io/apartamentossantaana/${APP_NAME}:sha-${SHA}"
 
-          # Generate manifest via Python to avoid heredoc indentation issues
-          python3 - <<PYEOF
+          python3 - << 'PYEOF'
           import os, textwrap
 
-          ns        = os.environ["NAMESPACE"] if "NAMESPACE" in os.environ else "${NAMESPACE}"
-          host      = "${PREVIEW_HOST}"
-          image     = "${IMAGE}"
-          app       = "${APP_NAME}"
-          port      = "${PORT}"
-          probe     = "${READINESS_PATH}"
+          ns    = os.environ["NAMESPACE"]
+          host  = os.environ["PREVIEW_HOST"]
+          image = os.environ["IMAGE"]
+          app   = os.environ["APP_NAME"]
+          port  = os.environ["PORT"]
+          probe = os.environ["READINESS_PATH"]
 
           manifest = f"""apiVersion: v1
           kind: Namespace
@@ -159,30 +162,29 @@ jobs:
                         number: 80
           """
 
-          # Strip common leading whitespace (artifact of YAML indentation)
-          manifest = textwrap.dedent(manifest)
           with open("/tmp/preview-manifest.yaml", "w") as f:
-              f.write(manifest)
-          print("Manifest written OK")
+              f.write(textwrap.dedent(manifest))
+          print("Manifest written: " + os.environ["NAMESPACE"])
           PYEOF
 
-          # SCP manifest and apply
+          export NAMESPACE PREVIEW_HOST IMAGE APP_NAME PORT READINESS_PATH
+
           scp /tmp/preview-manifest.yaml deploy@217.154.182.252:/tmp/${NAMESPACE}.yaml
+
           ssh deploy@217.154.182.252 "
             export KUBECONFIG=~/.kube/config
             kubectl apply -f /tmp/${NAMESPACE}.yaml
-            # Copy ghcr-secret to preview namespace
-            kubectl get secret ghcr-secret -n webs -o json | \
-              python3 -c \"
-          import json, sys
-          d = json.load(sys.stdin)
-          d['metadata'] = {'name': 'ghcr-secret', 'namespace': '${NAMESPACE}'}
-          print(json.dumps(d))
-          \" | kubectl apply -f -
+            # Copy ghcr-secret using raw dockerconfigjson data
+            DOCKER_CONFIG=\$(kubectl get secret ghcr-secret -n webs -o jsonpath='{.data.\.dockerconfigjson}')
+            kubectl create secret docker-registry ghcr-secret \
+              --namespace=${NAMESPACE} \
+              --from-literal=.dockerconfigjson=\$(echo \$DOCKER_CONFIG | base64 -d) \
+              --dry-run=client -o yaml | kubectl apply -f -
             rm /tmp/${NAMESPACE}.yaml
-            echo Preview namespace ready: ${NAMESPACE}
+            echo 'Preview namespace ready: ${NAMESPACE}'
           "
-          echo "PREVIEW_HOST=${PREVIEW_HOST}" >> \$GITHUB_ENV
+
+          echo "PREVIEW_HOST=${PREVIEW_HOST}" >> $GITHUB_ENV
 
       - name: Comment preview URL on PR
         uses: actions/github-script@v7
