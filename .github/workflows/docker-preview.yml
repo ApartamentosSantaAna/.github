@@ -42,10 +42,10 @@ jobs:
           SHA: ${{ inputs.sha }}
         run: |
           set -euo pipefail
-          NAMESPACE="preview-${APP_NAME}-pr-${PR_NUMBER}"
+          export NAMESPACE="preview-${APP_NAME}-pr-${PR_NUMBER}"
           APP_SLUG="${APP_NAME#santa-ana-}"
-          PREVIEW_HOST="pr-${PR_NUMBER}-${APP_SLUG}.apsantaana.eu"
-          IMAGE="ghcr.io/apartamentossantaana/${APP_NAME}:sha-${SHA}"
+          export PREVIEW_HOST="pr-${PR_NUMBER}-${APP_SLUG}.apsantaana.eu"
+          export IMAGE="ghcr.io/apartamentossantaana/${APP_NAME}:sha-${SHA}"
 
           python3 - << 'PYEOF'
           import os, textwrap
