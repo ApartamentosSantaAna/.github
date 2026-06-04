@@ -122,7 +122,6 @@ jobs:
                     periodSeconds: 5
                   securityContext:
                     allowPrivilegeEscalation: false
-                    runAsNonRoot: true
                     capabilities:
                       drop: ["ALL"]
           ---
