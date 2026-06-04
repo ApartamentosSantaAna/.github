@@ -174,11 +174,14 @@ jobs:
           ssh deploy@217.154.182.252 "
             export KUBECONFIG=~/.kube/config
             kubectl apply -f /tmp/${NAMESPACE}.yaml
-            kubectl get secret ghcr-secret -n webs -o yaml \
-              | grep -v 'resourceVersion:\|^\s*uid:\|creationTimestamp:' \
-              | sed "s/  namespace: webs/  namespace: ${NAMESPACE}/" \
-              | kubectl apply -f -
-            rm /tmp/${NAMESPACE}.yaml
+            kubectl get secret ghcr-secret -n webs \
+              -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d > /tmp/dockerconfig-${NAMESPACE}.json
+            kubectl create secret generic ghcr-secret \
+              --namespace=${NAMESPACE} \
+              --type=kubernetes.io/dockerconfigjson \
+              --from-file=.dockerconfigjson=/tmp/dockerconfig-${NAMESPACE}.json \
+              --dry-run=client -o yaml | kubectl apply -f -
+            rm /tmp/dockerconfig-${NAMESPACE}.json /tmp/${NAMESPACE}.yaml
             echo 'Preview namespace ready: ${NAMESPACE}'
           "
 
