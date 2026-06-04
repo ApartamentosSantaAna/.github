@@ -6,7 +6,8 @@ on:
       sha:
         description: Short SHA (7 chars) of the built image tag
         type: string
-        required: true
+        required: false
+        default: ''
       container-port:
         type: number
         default: 3000
