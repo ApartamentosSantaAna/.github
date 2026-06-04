@@ -21,9 +21,15 @@ jobs:
     permissions:
       pull-requests: write
     steps:
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_DEPLOY_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: ssh-keyscan 217.154.182.252 >> ~/.ssh/known_hosts
+
       - name: Deploy preview namespace
         env:
-          SSH_KEY: ${{ secrets.VPS_DEPLOY_KEY }}
           APP_NAME: ${{ github.event.repository.name }}
           PR_NUMBER: ${{ github.event.number }}
           PORT: ${{ inputs.container-port }}
@@ -36,30 +42,33 @@ jobs:
           PREVIEW_HOST="pr-${PR_NUMBER}-${APP_SLUG}.apsantaana.eu"
           IMAGE="ghcr.io/apartamentossantaana/${APP_NAME}:sha-${SHA_SHORT}"
 
-          mkdir -p ~/.ssh
-          printf '%s' "$SSH_KEY" > ~/.ssh/k
-          chmod 600 ~/.ssh/k
+          # Generate manifest via Python to avoid heredoc indentation issues
+          python3 - <<PYEOF
+          import os, textwrap
 
-          # Write manifest to local tempfile to avoid heredoc quoting issues
-          cat > /tmp/preview-manifest.yaml << MANIFEST
-          apiVersion: v1
+          ns        = os.environ["NAMESPACE"] if "NAMESPACE" in os.environ else "${NAMESPACE}"
+          host      = "${PREVIEW_HOST}"
+          image     = "${IMAGE}"
+          app       = "${APP_NAME}"
+          port      = "${PORT}"
+          probe     = "${READINESS_PATH}"
+
+          manifest = f"""apiVersion: v1
           kind: Namespace
           metadata:
-            name: ${NAMESPACE}
+            name: {ns}
             labels:
               app.kubernetes.io/managed-by: preview-ci
-              preview/app: ${APP_NAME}
-              preview/pr: "${PR_NUMBER}"
           ---
           apiVersion: cert-manager.io/v1
           kind: Certificate
           metadata:
             name: preview-tls
-            namespace: ${NAMESPACE}
+            namespace: {ns}
           spec:
             secretName: preview-tls
             dnsNames:
-            - ${PREVIEW_HOST}
+            - {host}
             issuerRef:
               name: letsencrypt-prod
               kind: ClusterIssuer
@@ -67,31 +76,31 @@ jobs:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: ${APP_NAME}
-            namespace: ${NAMESPACE}
+            name: {app}
+            namespace: {ns}
           spec:
             replicas: 1
             selector:
               matchLabels:
-                app: ${APP_NAME}
+                app: {app}
             template:
               metadata:
                 labels:
-                  app: ${APP_NAME}
+                  app: {app}
               spec:
                 imagePullSecrets:
                 - name: ghcr-secret
                 containers:
                 - name: app
-                  image: ${IMAGE}
+                  image: {image}
                   imagePullPolicy: Always
                   ports:
-                  - containerPort: ${PORT}
+                  - containerPort: {port}
                   env:
                   - name: APP_URL
-                    value: "https://${PREVIEW_HOST}"
+                    value: "https://{host}"
                   - name: APP_NAME
-                    value: "${APP_NAME}"
+                    value: "{app}"
                   - name: NODE_ENV
                     value: production
                   resources:
@@ -103,8 +112,8 @@ jobs:
                       memory: 256Mi
                   readinessProbe:
                     httpGet:
-                      path: ${READINESS_PATH}
-                      port: ${PORT}
+                      path: {probe}
+                      port: {port}
                     initialDelaySeconds: 10
                     periodSeconds: 5
                   securityContext:
@@ -116,47 +125,52 @@ jobs:
           apiVersion: v1
           kind: Service
           metadata:
-            name: ${APP_NAME}
-            namespace: ${NAMESPACE}
+            name: {app}
+            namespace: {ns}
           spec:
             selector:
-              app: ${APP_NAME}
+              app: {app}
             ports:
             - port: 80
-              targetPort: ${PORT}
+              targetPort: {port}
           ---
           apiVersion: networking.k8s.io/v1
           kind: Ingress
           metadata:
-            name: ${APP_NAME}
-            namespace: ${NAMESPACE}
+            name: {app}
+            namespace: {ns}
             annotations:
               traefik.ingress.kubernetes.io/router.middlewares: kube-system-security-headers@kubernetescrd,kube-system-ratelimit@kubernetescrd
           spec:
             tls:
             - hosts:
-              - ${PREVIEW_HOST}
+              - {host}
               secretName: preview-tls
             rules:
-            - host: ${PREVIEW_HOST}
+            - host: {host}
               http:
                 paths:
                 - path: /
                   pathType: Prefix
                   backend:
                     service:
-                      name: ${APP_NAME}
+                      name: {app}
                       port:
                         number: 80
-          MANIFEST
+          """
 
-          # SCP manifest to VPS and apply
-          scp -i ~/.ssh/k -o StrictHostKeyChecking=no /tmp/preview-manifest.yaml \
-            deploy@217.154.182.252:/tmp/preview-${NAMESPACE}.yaml
+          # Strip common leading whitespace (artifact of YAML indentation)
+          manifest = textwrap.dedent(manifest)
+          with open("/tmp/preview-manifest.yaml", "w") as f:
+              f.write(manifest)
+          print("Manifest written OK")
+          PYEOF
 
-          ssh -i ~/.ssh/k -o StrictHostKeyChecking=no deploy@217.154.182.252 \
-            "export KUBECONFIG=~/.kube/config
-            kubectl apply -f /tmp/preview-${NAMESPACE}.yaml
+          # SCP manifest and apply
+          scp /tmp/preview-manifest.yaml deploy@217.154.182.252:/tmp/${NAMESPACE}.yaml
+          ssh deploy@217.154.182.252 "
+            export KUBECONFIG=~/.kube/config
+            kubectl apply -f /tmp/${NAMESPACE}.yaml
             # Copy ghcr-secret to preview namespace
             kubectl get secret ghcr-secret -n webs -o json | \
               python3 -c \"
@@ -165,8 +179,9 @@ jobs:
           d['metadata'] = {'name': 'ghcr-secret', 'namespace': '${NAMESPACE}'}
           print(json.dumps(d))
           \" | kubectl apply -f -
-            rm /tmp/preview-${NAMESPACE}.yaml"
-
+            rm /tmp/${NAMESPACE}.yaml
+            echo Preview namespace ready: ${NAMESPACE}
+          "
           echo "PREVIEW_HOST=${PREVIEW_HOST}" >> \$GITHUB_ENV
 
       - name: Comment preview URL on PR
@@ -180,7 +195,7 @@ jobs:
               repo: context.repo.repo,
             });
             const existing = comments.find(c => c.body.includes('Preview deployed'));
-            const body = `🚀 **Preview deployed:** https://${host}\n\n_Updated on ${new Date().toISOString().slice(0,16)} UTC_`;
+            const body = `🚀 **Preview deployed:** https://${host}\n\n_Updated ${new Date().toISOString().slice(0,16)} UTC_`;
             if (existing) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
@@ -202,18 +217,21 @@ jobs:
     if: github.event.action == 'closed'
     runs-on: ubuntu-latest
     steps:
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_DEPLOY_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: ssh-keyscan 217.154.182.252 >> ~/.ssh/known_hosts
+
       - name: Delete preview namespace
         env:
-          SSH_KEY: ${{ secrets.VPS_DEPLOY_KEY }}
           APP_NAME: ${{ github.event.repository.name }}
           PR_NUMBER: ${{ github.event.number }}
         run: |
           set -euo pipefail
           NAMESPACE="preview-${APP_NAME}-pr-${PR_NUMBER}"
-          mkdir -p ~/.ssh
-          printf '%s' "$SSH_KEY" > ~/.ssh/k
-          chmod 600 ~/.ssh/k
-          ssh -i ~/.ssh/k -o StrictHostKeyChecking=no deploy@217.154.182.252 \
+          ssh deploy@217.154.182.252 \
             "export KUBECONFIG=~/.kube/config && \
              kubectl delete namespace ${NAMESPACE} --ignore-not-found && \
-             echo 'Namespace ${NAMESPACE} deleted'"
+             echo Deleted: ${NAMESPACE}"
