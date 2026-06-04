@@ -1,0 +1,80 @@
+name: Reusable Docker build
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile-path:
+        description: Ruta al Dockerfile relativa al repo
+        type: string
+        default: Dockerfile
+      image-suffix:
+        description: Sufijo opcional para el nombre de imagen (ej. -storybook)
+        type: string
+        required: false
+      provenance:
+        description: Generar SLSA provenance (default true, desactivar si rompe AIU)
+        type: boolean
+        default: true
+      sbom:
+        description: Generar SBOM (default true, desactivar si rompe AIU)
+        type: boolean
+        default: true
+    outputs:
+      image-tag:
+        description: Tag completo de la imagen publicada (ghcr.io/.../...:sha-XXXXXXX)
+        value: ${{ jobs.build.outputs.image-tag }}
+      short-sha:
+        description: SHA corto (7 chars) usado en el tag
+        value: ${{ jobs.build.outputs.short-sha }}
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      short-sha: ${{ steps.build_sha.outputs.short }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Compute build SHA
+        id: build_sha
+        run: |
+          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "short=${SHA:0:7}" >> $GITHUB_OUTPUT
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}${{ inputs.image-suffix }}
+          tags: |
+            type=raw,value=sha-${{ steps.build_sha.outputs.short }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ inputs.dockerfile-path }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: ${{ inputs.provenance }}
+          sbom: ${{ inputs.sbom }}
